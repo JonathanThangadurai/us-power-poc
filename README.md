@@ -1,5 +1,7 @@
 # US Power POC (CAISO prices)
 
+[![CI](https://github.com/JonathanThangadurai/us-power-poc/actions/workflows/ci.yml/badge.svg)](https://github.com/JonathanThangadurai/us-power-poc/actions/workflows/ci.yml)
+
 **This is a proof of concept.** It is a small, live pipeline that pulls real CAISO day-ahead and
 real-time prices for one hub (NP15), stores them idempotently in PostgreSQL, and exposes them
 through a FastAPI service with monitoring built in. It deliberately does not include a dashboard,
@@ -84,6 +86,17 @@ a silent empty success. This is covered by a recorded-fixture test
 captured from the live API.
 
 ## Running it
+
+### Live deployment
+
+Deployed on [Railway](https://railway.com): the `us-power-poc-api` service builds this repo's
+`Dockerfile` and runs alongside a managed Postgres service in the same project. Railway's own
+GitHub integration redeploys the service on every push to `main` (not the GitHub Actions workflow
+itself — Actions' `deploy` job instead curls the live `/health` endpoint after `build` passes, as a
+CI-visible check that the deploy landed and the app is up).
+
+- Public URL: https://us-power-poc-api-production.up.railway.app
+- `/docs`: https://us-power-poc-api-production.up.railway.app/docs
 
 ### Locally with Docker Compose
 

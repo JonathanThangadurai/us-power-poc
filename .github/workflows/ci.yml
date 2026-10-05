@@ -50,7 +50,10 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Deploy on merge to main
+      - name: Verify live deployment is healthy
+        # Railway's own GitHub integration deploys this service on push to main
+        # (not this workflow - see README "Deployment"). This step is the CI-side
+        # check that the deploy actually landed and the app is up.
         run: |
-          echo "Deploy step placeholder - see README Deployment section"
+          sleep 20
+          curl -f https://us-power-poc-api-production.up.railway.app/health
