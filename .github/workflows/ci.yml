@@ -52,4 +52,5 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Deploy on merge to main
-        run: echo "TODO: wire up deploy step for the chosen host (see README 'Deployment')"
+        run: |
+          echo "Deploy step placeholder - see README Deployment section"
