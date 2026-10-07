@@ -8,6 +8,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
 COPY db ./db
 COPY scripts ./scripts
+COPY migrations ./migrations
+COPY alembic.ini .
 
 EXPOSE 8000
 

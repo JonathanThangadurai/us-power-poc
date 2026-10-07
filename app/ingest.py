@@ -1,4 +1,6 @@
-"""Orchestrates one ingestion run: fetch -> pivot -> upsert -> quality checks -> record run."""
+"""Orchestrates one ingestion run: fetch -> pivot -> quality checks -> load (prices
+on pass, quarantine_prices on fail) -> record run. Checks run before anything lands
+in the serving table, not after - a failing batch never touches `prices` at all."""
 
 from __future__ import annotations
 
@@ -51,12 +53,15 @@ async def run_ingest(market: str, start: datetime, end: datetime, node: str = co
         return {"status": "failure", "error": str(exc)}
 
     intervals = pivot_rows(result.rows, market)
-    rows_loaded = db.upsert_prices(intervals)
-    latest = db.max_interval_start(market)
-    checks = run_all_checks(intervals, market, latest)
-
+    # Freshness must judge the batch we just fetched, not whatever is already in
+    # `prices` - checking the table here (now that validation runs before loading)
+    # would just measure how stale the existing data is, not this fetch.
+    latest_in_batch = max((iv.interval_start_utc for iv in intervals), default=None)
+    checks = run_all_checks(intervals, market, latest_in_batch)
     status = "success" if checks["all_passed"] else "failure"
-    db.insert_pipeline_run(
+    rows_loaded = len(intervals) if status == "success" else 0
+
+    run_id = db.insert_pipeline_run(
         started_at=started_at,
         market=market,
         status=status,
@@ -66,7 +71,15 @@ async def run_ingest(market: str, start: datetime, end: datetime, node: str = co
         checks=checks,
     )
 
-    if status == "failure":
+    # Raw zone: the untouched CSV rows this run fetched, kept once per run rather
+    # than duplicated inline on every conformed row.
+    db.insert_raw_price(run_id, market, {"rows": result.rows})
+
+    if status == "success":
+        db.upsert_prices(intervals)
+    else:
+        failed = ", ".join(c["name"] for c in checks["checks"] if not c["passed"])
+        db.insert_quarantine_batch(run_id, intervals, reason=f"failed checks: {failed}")
         await _maybe_alert(f"CAISO ingest quality checks FAILED for {market}: {checks}")
 
     return {"status": status, "rows_loaded": rows_loaded, "checks": checks}

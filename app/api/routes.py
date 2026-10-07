@@ -47,3 +47,17 @@ def pipeline_status():
     latest = db.latest_pipeline_run()
     recent = db.recent_pipeline_runs(10)
     return {"latest_run": latest, "recent_runs": recent}
+
+
+@router.get("/mart/daily-summary")
+def mart_daily_summary(
+    node: str | None = None,
+    market: str | None = Query(None, description="DAM or RTM"),
+    limit: int = Query(100, le=1000),
+    offset: int = Query(0, ge=0),
+):
+    if market is not None:
+        market = market.upper()
+        if market not in ("DAM", "RTM"):
+            raise HTTPException(status_code=400, detail="market must be DAM or RTM")
+    return db.query_mart_daily_summary(node, market, limit, offset)

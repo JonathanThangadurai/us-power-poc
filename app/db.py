@@ -30,10 +30,18 @@ def get_cursor():
 
 
 def init_schema() -> None:
-    schema_path = Path(__file__).resolve().parent.parent / "db" / "schema.sql"
-    sql = schema_path.read_text()
-    with get_cursor() as cur:
-        cur.execute(sql)
+    """Brings the schema up to the latest Alembic revision. Safe to call on every
+    startup: a fresh database gets the full history applied; an already-current one
+    (including the live deployment, whose tables predate Alembic's adoption) just has
+    revision 0001 recorded as already-satisfied since it's written as CREATE TABLE
+    IF NOT EXISTS, then any new revisions on top of that actually run."""
+    from alembic import command
+    from alembic.config import Config
+
+    project_root = Path(__file__).resolve().parent.parent
+    cfg = Config(str(project_root / "alembic.ini"))
+    cfg.set_main_option("script_location", str(project_root / "migrations"))
+    command.upgrade(cfg, "head")
 
 
 def upsert_prices(intervals: list[PriceInterval], raw_payload: dict | None = None) -> int:
@@ -72,6 +80,69 @@ def upsert_prices(intervals: list[PriceInterval], raw_payload: dict | None = Non
     return len(intervals)
 
 
+def insert_raw_price(pipeline_run_id: int, market: str, raw_payload: dict) -> None:
+    """The raw zone: the untouched fetch payload, kept once per run rather than
+    duplicated inline on every conformed row."""
+    with get_cursor() as cur:
+        cur.execute(
+            "INSERT INTO raw_prices (pipeline_run_id, market, raw_payload) VALUES (%s, %s, %s)",
+            (pipeline_run_id, market, json.dumps(raw_payload)),
+        )
+
+
+def insert_quarantine_batch(pipeline_run_id: int, intervals: list[PriceInterval], reason: str) -> int:
+    """A batch that failed a data-quality check lands here instead of `prices`."""
+    if not intervals:
+        return 0
+    with get_cursor() as cur:
+        for iv in intervals:
+            cur.execute(
+                """
+                INSERT INTO quarantine_prices (pipeline_run_id, node, market, interval_start_utc,
+                                                interval_end_utc, lmp, energy, congestion, loss, reason)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    pipeline_run_id,
+                    iv.node,
+                    iv.market,
+                    iv.interval_start_utc,
+                    iv.interval_end_utc,
+                    iv.lmp,
+                    iv.energy,
+                    iv.congestion,
+                    iv.loss,
+                    reason,
+                ),
+            )
+    return len(intervals)
+
+
+def query_mart_daily_summary(
+    node: str | None, market: str | None, limit: int, offset: int
+) -> list[dict]:
+    clauses = []
+    params: list = []
+    if node:
+        clauses.append("node = %s")
+        params.append(node)
+    if market:
+        clauses.append("market = %s")
+        params.append(market)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    sql = f"""
+        SELECT node, market, day_utc, avg_lmp, min_lmp, max_lmp, stddev_lmp, interval_count
+        FROM mart_daily_summary
+        {where}
+        ORDER BY day_utc DESC
+        LIMIT %s OFFSET %s
+    """
+    params.extend([limit, offset])
+    with get_cursor() as cur:
+        cur.execute(sql, params)
+        return cur.fetchall()
+
+
 def query_prices(
     market: str | None, start: datetime | None, end: datetime | None, limit: int, offset: int
 ) -> list[dict]:
@@ -101,31 +172,22 @@ def query_prices(
 
 
 def query_hourly_spread(start: datetime | None, end: datetime | None, limit: int, offset: int) -> list[dict]:
+    """Reads the mart_hourly_spread view (see migrations/versions/0002_*) rather than
+    recomputing the DAM/RTM join inline - the mart layer owns this aggregate now."""
     clauses = []
     params: list = []
     if start:
-        clauses.append("interval_start_utc >= %s")
+        clauses.append("hour_start_utc >= %s")
         params.append(start)
     if end:
-        clauses.append("interval_start_utc < %s")
+        clauses.append("hour_start_utc < %s")
         params.append(end)
-    where = f"AND {' AND '.join(clauses)}" if clauses else ""
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     sql = f"""
-        WITH hourly AS (
-            SELECT market, date_trunc('hour', interval_start_utc) AS hour_start_utc, avg(lmp) AS avg_lmp
-            FROM prices
-            WHERE lmp IS NOT NULL {where}
-            GROUP BY market, hour_start_utc
-        )
-        SELECT
-            dam.hour_start_utc,
-            dam.avg_lmp AS dam_avg_lmp,
-            rtm.avg_lmp AS rtm_avg_lmp,
-            (rtm.avg_lmp - dam.avg_lmp) AS dam_rtm_spread
-        FROM hourly dam
-        JOIN hourly rtm ON rtm.hour_start_utc = dam.hour_start_utc AND rtm.market = 'RTM'
-        WHERE dam.market = 'DAM'
-        ORDER BY dam.hour_start_utc DESC
+        SELECT hour_start_utc, dam_avg_lmp, rtm_avg_lmp, dam_rtm_spread
+        FROM mart_hourly_spread
+        {where}
+        ORDER BY hour_start_utc DESC
         LIMIT %s OFFSET %s
     """
     params.extend([limit, offset])
