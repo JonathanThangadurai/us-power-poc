@@ -8,6 +8,11 @@ raw/staging/mart layers, and exposes them through a FastAPI service with monitor
 deliberately does not include a dashboard, a forecasting model, additional ISOs, or heavier
 engineering tooling (mypy, Prometheus) — see "Known limitations" below.
 
+**Live right now** - real `/docs` and real `/pipeline/status` output, not mockups:
+
+![Live Swagger UI](docs/images/docs-ui.jpg)
+![Live /pipeline/status response, executed against the running deployment](docs/images/pipeline-status.jpg)
+
 ## Attribution
 
 Price data is sourced from the **California ISO (CAISO) OASIS** system
